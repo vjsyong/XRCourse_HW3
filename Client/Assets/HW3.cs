@@ -12,6 +12,7 @@ using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
 using static UnityEngine.XR.ARSubsystems.XRCpuImage;
 
+
 public class HW3 : MonoBehaviour
 {
     [SerializeField]
@@ -93,32 +94,34 @@ public class HW3 : MonoBehaviour
     }
 
     /// Runs in background clientReceiveThread; Listens for incomming data. 	
-	/// </summary>     
-	private void ListenForData()
+    /// </summary>     
+    private void ListenForData()
     {
         try
         {
             socketConnection = new TcpClient(hostIP, hostPort);
-            Byte[] bytes = new Byte[1024];
-            while (true)
+            using (NetworkStream stream = socketConnection.GetStream())
             {
-                // Get a stream object for reading 				
-                using (NetworkStream stream = socketConnection.GetStream())
+                Byte[] bytes = new Byte[1024];
+                while (true)
                 {
+                    // Get a stream object for reading 				
                     Debug.Log("Start Reading");
                     byte[] datatype = new byte[4];
                     stream.Read(datatype, 0, 4);
                     int type = BitConverter.ToInt32(datatype, 0);
-                    Debug.Log("Datatype "+type.ToString() );
-                    if (type == 1) {
+                    Debug.Log("Datatype " + type.ToString());
+                    if (type == 1)
+                    {
                         byte[] datalength = new byte[4];
+                        stream.Read(datalength, 0, 4);
                         int length = BitConverter.ToInt32(datalength, 0);
                         Debug.Log("Length");
                         var incommingData = new byte[length];
-                        Array.Copy(bytes, 0, incommingData, 0, length);
-                        string message = BitConverter.ToString(bytes,0,length);
+                        stream.Read(incommingData, 0, length); // Read the actual message
+                        string message = Encoding.UTF8.GetString(incommingData); // Convert bytes to string
                         log.text += "Received Message: " + message + "\n";
-                        Debug.Log("Received Message: "+message);
+                        Debug.Log("Received Message: " + message);
                     }
                 }
             }
@@ -129,6 +132,7 @@ public class HW3 : MonoBehaviour
             Debug.Log("Socket exception: " + socketException);
         }
     }
+
     /// <summary>
     ///  Very simple protocol:
     ///  4 bytes -> length
@@ -182,9 +186,5 @@ public class HW3 : MonoBehaviour
         
     }
 
-    // Update is called once per frame
-    void Update()
-    {
-        
-    }
+
 }
