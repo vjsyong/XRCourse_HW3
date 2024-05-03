@@ -1,22 +1,27 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
+using TMPro;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
-using Unity.XR.CoreUtils;
+using Unity.Mathematics;
+using Unity.VisualScripting;
 using UnityEngine;
+using UnityEngine.UI;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
-using static UnityEngine.XR.ARSubsystems.XRCpuImage;
+
+[RequireComponent(typeof(ARRaycastManager))]
+[RequireComponent(typeof(ARAnchorManager))]
+[RequireComponent(typeof(ARPointCloudManager))]
 
 
 public class HW3 : MonoBehaviour
 {
     [SerializeField]
-    String hostIP;
+    string hostIP;
     [SerializeField] 
     int hostPort;
 
@@ -26,15 +31,78 @@ public class HW3 : MonoBehaviour
     [SerializeField]
     TMPro.TextMeshProUGUI log;
 
+    [SerializeField]
+    Button toggleButton;
+
+    [SerializeField]
+    GameObject cubePrefab;
+
+
     private TcpClient socketConnection;
     private Thread clientReceiveThread;
 
+    private Camera _camera;
 
-    public void captureCameraImage() {
+    private ARRaycastManager raycastManager;
+
+    private ARAnchorManager anchorManager;
+
+    private ARPointCloudManager pointCloudManager;
+
+    private List<ARAnchor> anchors = new List<ARAnchor>();
+
+    private static List<ARRaycastHit> hits = new List<ARRaycastHit>();
+
+    Camera savedCam;
+
+    Vector2 poi;
+    bool newpoi = false;
 
 
+    Vector2 StringToVector2(string input)
+    {
+        input = input.Replace("(", "");
+        input = input.Replace(")", "");
+        string[] values = input.Split(',');
+        return new Vector2(float.Parse(values[0]), float.Parse(values[1]));
+    }
+
+    private void Awake()
+    {
+        raycastManager = GetComponent<ARRaycastManager>();
+        anchorManager = GetComponent<ARAnchorManager>();
+        pointCloudManager = GetComponent<ARPointCloudManager>();
+
+        toggleButton.onClick.AddListener(ToggleDetection);
+    }
+
+    private void ToggleDetection()
+    {
+        pointCloudManager.enabled = !pointCloudManager.enabled;
+
+        foreach(ARPointCloud pointCloud in pointCloudManager.trackables)
+        {
+            pointCloud.gameObject.SetActive(pointCloudManager.enabled);
+        }
+
+        toggleButton.GetComponentInChildren<TextMeshProUGUI>().text = pointCloudManager.enabled ?
+            "Disable Plane Detection" : "Enable Plane Detection";
+
+    }
+
+    public void captureCameraImage()
+    {
+
+        ConnectToTcpServer();
         if (!cameraManager.TryAcquireLatestCpuImage(out XRCpuImage image))
             return;
+
+        Resolution currentResolution = Screen.currentResolution;
+
+
+        savedCam = Instantiate(_camera);
+        savedCam.enabled = false;
+        savedCam.CopyFrom(_camera);
 
 
         // Set up our conversion params
@@ -64,7 +132,7 @@ public class HW3 : MonoBehaviour
                     new IntPtr(NativeArrayUnsafeUtility.GetUnsafePtr(rawTextureData)),
                     rawTextureData.Length);
 
-                SendImage(0,rawTextureData,rawTextureData.Length, image.width, image.height);
+                SendImage(0, rawTextureData, rawTextureData.Length, image.width, image.height, currentResolution.width, currentResolution.height);
             }
         }
         finally
@@ -73,6 +141,7 @@ public class HW3 : MonoBehaviour
             image.Dispose();
         }
     }
+    
 
 
     /// <summary> 	
@@ -106,11 +175,9 @@ public class HW3 : MonoBehaviour
                 while (true)
                 {
                     // Get a stream object for reading 				
-                    Debug.Log("Start Reading");
                     byte[] datatype = new byte[4];
                     stream.Read(datatype, 0, 4);
                     int type = BitConverter.ToInt32(datatype, 0);
-                    Debug.Log("Datatype " + type.ToString());
                     if (type == 1)
                     {
                         byte[] datalength = new byte[4];
@@ -120,8 +187,14 @@ public class HW3 : MonoBehaviour
                         var incommingData = new byte[length];
                         stream.Read(incommingData, 0, length); // Read the actual message
                         string message = Encoding.UTF8.GetString(incommingData); // Convert bytes to string
+
+                        poi = StringToVector2(message);
+                        log.text = "POI from server message: " + poi.ToString() + "\n";
+                        newpoi = true;
+
                         log.text += "Received Message: " + message + "\n";
                         Debug.Log("Received Message: " + message);
+                        break; // Close socket after finish receiving message
                     }
                 }
             }
@@ -139,7 +212,7 @@ public class HW3 : MonoBehaviour
     /// </summary>
     /// <param name="rawImage"></param>
     /// <param name="length"></param>
-    private void SendImage(int type, NativeArray<byte> rawImage, int length, int width, int height)
+    private void SendImage(int type, NativeArray<byte> rawImage, int length, int img_width, int img_height, int canvas_width, int canvas_height)
     {
         if (socketConnection == null)
         {
@@ -157,11 +230,17 @@ public class HW3 : MonoBehaviour
                 byte[] messageLength = BitConverter.GetBytes(length);
                 stream.Write(messageLength, 0, messageLength.Length);
 
-                byte[] imageWidth = BitConverter.GetBytes(width);
+                byte[] imageWidth = BitConverter.GetBytes(img_width);
                 stream.Write(imageWidth, 0, imageWidth.Length);
 
-                byte[] imageHeight = BitConverter.GetBytes(height);
+                byte[] imageHeight = BitConverter.GetBytes(img_height);
                 stream.Write(imageHeight, 0, imageWidth.Length);
+
+                byte[] canvasWidth = BitConverter.GetBytes(canvas_width);
+                stream.Write(canvasWidth, 0, canvasWidth.Length);
+
+                byte[] canvasHeight = BitConverter.GetBytes(canvas_height);
+                stream.Write(canvasHeight, 0, canvasHeight.Length);
 
                 byte[] imageBytes = rawImage.ToArray();
                 stream.Write(imageBytes, 0, rawImage.Length);
@@ -179,12 +258,88 @@ public class HW3 : MonoBehaviour
     }
 
 
+
     // Start is called before the first frame update
     void Start()
     {
-        ConnectToTcpServer();
+
+        _camera = Camera.main;
+        //ConnectToTcpServer();
         
+    }
+
+    void Update()
+    {
+        if (Input.touchCount > 0)
+        {
+            Touch touch = Input.GetTouch(0);
+            if (touch.phase == TouchPhase.Began)
+            {
+                Debug.Log(touch.position);
+                log.text += "Touch: " + touch.position.ToString() + "\n";
+            }
+        }
+        if (!newpoi)
+            return;
+
+        newpoi = false;
+        log.text += "POI: " + poi.ToString() + "\n";
+
+        //Camera savedCam = Instantiate(_camera);
+        //savedCam.enabled = false;
+        //savedCam.CopyFrom(_camera);
+
+        var poi_ray = ScreenPointToRay(savedCam, poi);
+
+        //if (raycastManager.Raycast(touch.position, hits, TrackableType.FeaturePoint))
+        if (raycastManager.Raycast(poi_ray, hits, TrackableType.FeaturePoint))
+        {
+
+            Pose hitPose = hits[0].pose;
+            var anchor = anchorManager.AddAnchor(hitPose);
+            
+
+            if (anchor == null)
+            {
+                string errorEntry = "There was an error creating a reference point\n";
+                Debug.Log(errorEntry);
+            }
+            else
+            {
+                Debug.Log("Added anchor");
+                anchors.Add(anchor);
+                Instantiate(cubePrefab, hitPose.position + new Vector3(0, 0.0f, 0), Quaternion.identity);
+            }
+        }
+    }
+
+
+    public static Ray ScreenPointToRay(Camera camera, Vector2 screenPoint)
+    {
+        // Convert screen point to viewport coordinates
+        Vector2 viewportPoint = new Vector2(
+            screenPoint.x / Screen.width,
+            screenPoint.y / Screen.height
+        );
+
+        // Convert viewport coordinates to world space
+        Vector3 worldPoint = camera.ViewportToWorldPoint(new Vector3(
+            viewportPoint.x,
+            viewportPoint.y,
+            camera.nearClipPlane
+        ));
+
+        
+        // Calculate ray direction
+        Vector3 direction = worldPoint - camera.transform.position;
+
+        Debug.Log("ray camera, world point and dir (cam): " + camera.transform.position + " " + worldPoint + " "  + direction);
+
+        // Create and return the ray
+        return new Ray(camera.transform.position, direction.normalized);
     }
 
 
 }
+
+
